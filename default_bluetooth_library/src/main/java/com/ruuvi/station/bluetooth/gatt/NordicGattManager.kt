@@ -22,6 +22,9 @@ class NordicGattManager(context: Context, val device: BluetoothDevice): BleManag
     private var readLogsFrom: Date? = null
 
     private var logs = mutableListOf<LogReading>()
+    // Index of the readings by time: a search of the list for each message
+    // is too slow for a year of history (150 000 messages).
+    private var logsByTime = HashMap<Long, LogReading>()
     private var syncedPoints = 0
 
     private var model: String? = null
@@ -63,6 +66,7 @@ class NordicGattManager(context: Context, val device: BluetoothDevice): BleManag
     private fun clearState() {
         Timber.d("$device clearState")
         logs = mutableListOf()
+        logsByTime = HashMap()
         syncedPoints = 0
         model = null
         serialNumber = null
@@ -222,32 +226,32 @@ class NordicGattManager(context: Context, val device: BluetoothDevice): BleManag
                 val timestamp = data.copyOfRange(3, 7)
                 val value = data.copyOfRange(7, 11)
                 val time = Date(timestamp.toLong() * 1000)
-                var idx = logs.indexOfFirst { x -> x.date.time == time.time }
-                if (idx == -1) {
-                    val reading = LogReading()
+                var reading = logsByTime[time.time]
+                if (reading == null) {
+                    reading = LogReading()
                     reading.id = device.address
                     reading.date = time
                     logs.add(reading)
-                    idx = logs.size - 1
+                    logsByTime[time.time] = reading
                     syncedPoints++
-                    gattCallback?.syncProgress(syncedPoints)
+                    if (syncedPoints % SYNC_PROGRESS_STEP == 0) {
+                        gattCallback?.syncProgress(syncedPoints)
+                    }
                 }
                 when {
                     type.contentEquals(temperatureType) -> {
                         val temp = value.toInt() / 100.0
-                        logs[idx].temperature = temp
+                        reading.temperature = temp
                     }
                     type.contentEquals(humidityType) -> {
-                        Timber.d("humidity $value")
-                        logs[idx].humidity = if (value.contentEquals(nullValue)) {
+                        reading.humidity = if (value.contentEquals(nullValue)) {
                             null
                         } else {
                             value.toLong().toFloat() / 100.0
                         }
                     }
                     type.contentEquals(pressureType) -> {
-                        Timber.d("pressure $value")
-                        logs[idx].pressure = if (value.contentEquals(nullValue)) {
+                        reading.pressure = if (value.contentEquals(nullValue)) {
                             null
                         } else {
                             value.toLong().toDouble()
@@ -472,6 +476,7 @@ class NordicGattManager(context: Context, val device: BluetoothDevice): BleManag
 
     companion object {
         const val MAX_CONNECT_RETRY = 3
+        const val SYNC_PROGRESS_STEP = 10
         private val CCCD: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
         private val infoService: UUID = UUID.fromString("0000180a-0000-1000-8000-00805f9b34fb")
         private val nordicRxTxService: UUID = UUID.fromString("6e400001-b5a3-f393-e0a9-e50e24dcca9e")
